@@ -3,6 +3,8 @@ import os
 from parameters import INTERVIEW_PARAMETERS, OPENAI_API_KEY
 from core.manager import InterviewManager
 from core.agent import LLMAgent
+from core.auxiliary import extract_programme_choice
+
 
 def connect_to_database():
     """ Instantiate specific backend database. """
@@ -62,100 +64,126 @@ def transcribe(audio:str) -> dict:
     return {'transcription':transcription}
 
 def next_question(session_id:str, interview_id:str, user_message:str=None) -> dict:
-    """
-    Process user message and generate response by the AI-interviewer.
-
-    Args:
-        session_id: (str) unique interview session ID
-        user_message: (str) interviewee response
-        interview_id: (str) containing interview guidelines index
-    Returns:
-        response: (dict) containing `message` from interviewer
-    """
-
-    # Resume if interview has started, otherwise begin (new) session
     try:
         interview = resume_interview_session(session_id, interview_id, user_message)
         parameters = interview.parameters
     except AssertionError:
         return begin_interview_session(session_id, interview_id)
 
-    # Exit condition: this interview has been previously ended
     if interview.is_terminated():
-        return {'session_id':session_id, 'message':parameters['termination_message']}
+        return {'session_id': session_id, 'message': parameters['termination_message']}
 
-    # Provide interview guidelines to LLM agent
     agent.load_parameters(parameters)
 
-    # Optional: Moderate interviewee responses, e.g. flagging off-topic or harmful messages
     if parameters.get('moderate_answers') and parameters.get('moderator'):
         on_topic = agent.review_answer(user_message, interview.get_history())
         if not on_topic:
             interview.flag_risk(user_message)
-
-        # Terminate if the conversation has been flagged too often
         if interview.flagged_too_often():
             interview.update_session()
-            return {'session_id':session_id, 'message':parameters['flagged_message']}
+            return {'session_id': session_id, 'message': parameters['flagged_message']}
+        if not on_topic:
+            interview.update_session()
+            return {'session_id': session_id, 'message': parameters['off_topic_message']}
 
-        # If user message does not fit the interview context, give another chance
-        if not on_topic: # but not flagged too often...
-            interview.update_session() 
-            return {'session_id':session_id, 'message':parameters['off_topic_message']}
-
-    """
-    UPDATE INTERVIEW WITH NEW USER MESSAGE
-    Note this happens *after* security checks such that
-    flagged messages are *not* added to interview history.
-    """
     interview.add_chat_to_session(user_message, type="answer")
 
+    #Print out topics and current topic
+    current_topic = interview.get_current_topic()
+    current_question_idx = interview.get_current_topic_question()
+    print(f"Current topic index: {current_topic}. Current question index: {current_question_idx}")
+    topic_data = parameters['interview_plan'][current_topic - 1]
+    if current_topic < len(parameters['interview_plan']):
+        next_topic_data = parameters['interview_plan'][current_topic]
+        print(f"Next topic data: {next_topic_data['topic']}")
+    else:
+        next_topic_data = None
+        print("No next topic data (this is the last topic).")
 
-    ##### CONTINUE INTERVIEW BASED ON WORKFLOW #####
+    print(f"Current topic data: {topic_data['topic']}")
+    print(f"Next topic data: {next_topic_data['topic'] if next_topic_data else 'None'}")
 
-    # Current topic guide
+    if "explain_programmes" in topic_data.values():
+        programme_map = interview.current_state.get('programme_description_map', {})
+        programme_explanation = extract_programme_choice(user_message, programme_map)
+        if programme_explanation:
+            interview.current_state["programme_explanation"] = programme_explanation
+
+    if "scripted_message_favourite_programme" in topic_data:
+        programme_map = interview.current_state.get("programme_map", {})
+        favourite = extract_programme_choice(user_message, programme_map)
+        if favourite:
+            interview.current_state["favourite_programme"] = favourite
+
+    if "explain_programmes" in topic_data.values() and user_message.strip().lower() in ["ok", "ok.", "okay", "that's clear", "got it", "no"]:
+        next_question, summary = agent.transition_topic(interview.get_history(), interview.current_state)
+        interview.update_transition(summary)
+        if isinstance(next_question, dict):
+            interview.add_chat_to_session(next_question["text"], type="question")
+            return {
+                "session_id": session_id,
+                "message": next_question["text"],
+                "image_url": next_question.get("image_url")
+            }
+        else:
+            interview.add_chat_to_session(next_question, type="question")
+            return {
+                "session_id": session_id,
+                "message": next_question
+            }
+    #-----------------------------------
+    # Invoke AVA
+    #-----------------------------------
+    if topic_data["topic"] == "Talk with AVA":
+        pass
+    #-----------------------------------
+    # Continue as normal
+    #-----------------------------------
     num_topics = len(parameters['interview_plan'])
     current_topic_idx = interview.get_current_topic()
     on_last_topic = current_topic_idx == num_topics
-    logging.info(f"On topic {current_topic_idx}/{num_topics}...")
 
-    # Current question within topic guide
     current_question_idx = interview.get_current_topic_question()
-    num_questions = parameters['interview_plan'][current_topic_idx-1]['length']
+    num_questions = parameters['interview_plan'][current_topic_idx - 1]['length']
     on_last_question = current_question_idx >= num_questions
-    logging.info(f"On question {current_question_idx}/{num_questions}...")
 
-    # Continue in workflow
     if on_last_topic and on_last_question:
-        # Close interview with pre-determined closing questions
         next_question = interview.get_final_question()
         interview.update_closing()
         if not next_question:
-            # Exit condition: have already produced last "final" question
             interview.terminate()
             interview.update_session()
-            return {'session_id':session_id, 'message':parameters['end_of_interview_message']}
+            return {'session_id': session_id, 'message': parameters['end_of_interview_message']}
 
     elif on_last_question:
-        # Transition to *next* topic...
-        next_question, summary = agent.transition_topic(interview.get_history())
+        transition_response, summary = agent.transition_topic(interview.get_history(), interview.current_state)
         interview.update_transition(summary)
 
+        if isinstance(transition_response, dict):
+            interview.add_chat_to_session(transition_response["text"], type="question")
+            return {
+                "session_id": session_id,
+                "message": transition_response["text"],
+                "image_url": transition_response.get("image_url")
+            }
+        else:
+            interview.add_chat_to_session(transition_response, type="question")
+            return {
+                "session_id": session_id,
+                "message": transition_response
+            }
+
     else:
-        # Proceed *within* topic...
-        next_question = agent.probe_within_topic(interview.get_history())
+        next_question = agent.probe_within_topic(interview.get_history(), interview.current_state)
         interview.update_probe()
 
-    # Update interview with new output
-    logging.info(f"Interviewer responded: '{next_question}'")
     interview.add_chat_to_session(next_question, type="question")
 
-    # Optional: Check if next question is flagged by OpenAI's moderation endpoint
     if parameters.get('moderate_questions'):
-        flagged_question = agent.review_question(next_question)
-        if flagged_question:
+        if agent.review_question(next_question):
             interview.terminate(reason="question_flagged")
             interview.update_session()
-            return {'session_id':session_id, 'message':parameters['end_of_interview_message']}
+            return {'session_id': session_id, 'message': parameters['end_of_interview_message']}
     
-    return {'session_id':session_id, 'message':next_question}
+    
+    return {'session_id': session_id, 'message': next_question}

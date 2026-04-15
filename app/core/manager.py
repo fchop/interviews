@@ -1,6 +1,16 @@
 from datetime import datetime
 import logging
+import random
+from core.auxiliary import get_randomised_programmes
+from core.AVA import get_llm_response
 
+programmes = [
+    ("Conditional Cash Transfers (CCTs)", "These provide money..."),
+    ("Unconditional Cash Transfers (UCTs)", "These give money..."),
+    ("Public Works Programmes", "These offer temporary employment..."),
+    ("In-Kind Transfers", "Recipients receive goods..."),
+    ("School Feeding Programmes", "These provide free meals...")
+]
 
 class InterviewManager(object):
     """
@@ -15,9 +25,12 @@ class InterviewManager(object):
         self.client = client
         self.session_id = session_id
     
+
     def begin_session(self, parameters:dict):
         """ Set starting interview session variables. """
         logging.info(f"Starting new session '{self.session_id}'")
+        programmes, programme_map, programme_description_map = get_randomised_programmes()
+
         self.history = []           # List of 'states', i.e. messages
         self.current_state = {
             'order': 0,                         # index of message
@@ -29,7 +42,10 @@ class InterviewManager(object):
             'terminated': False,                # whether termination signal been sent
             'summary': '',                      # running summary
             'type': 'question',                 # question or answer
-            'content': None                     # content
+            'content': None,                    # content
+            'programmes':programmes,
+            'programme_map': programme_map,
+            'programme_description_map':programme_description_map
         }
         self.parameters = parameters
 
@@ -72,6 +88,7 @@ class InterviewManager(object):
         self.history.append(self.current_state.copy())
         self.client.update_remote_session(self.session_id, self.history)
 
+
     def terminate(self, reason:str="end_of_interview"):
         """ Record termination of interview. """
         self.current_state["terminated"] = True
@@ -110,8 +127,13 @@ class InterviewManager(object):
         """
         self.current_state["question_idx"] = 1  
         self.current_state["topic_idx"] += 1
+
+        logging.info(f"Moved to topic index: {self.current_state['topic_idx']}")
+
         if self.parameters.get('summary'):
             self.update_summary(summary)
+
+        
 
     def update_closing(self):
         self.current_state["question_idx"] = 99  
@@ -126,3 +148,13 @@ class InterviewManager(object):
         self.history[-1] = self.current_state
         self.client.update_remote_session(self.session_id, self.history)
    
+    @staticmethod
+    def ask_ava(user_message: str) -> str:
+        """
+        Send a question to the AVA LLM and return its response.
+        """
+        messages = [
+            {"role": "system", "content": "You are a helpful assistant knowledgeable about evidence on poverty programs. Be very brief in your response."},
+            {"role": "user", "content": user_message}
+        ]
+        return get_llm_response(messages)

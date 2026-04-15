@@ -1,4 +1,6 @@
 """This Flask application provides several endpoints to manage and interact with interview sessions. Each endpoint serves a specific purpose, such as starting an interview session, continuing with the next question, transcribing an audio message from interviewees, loading, deleting, or retrieving stored interviews sessions. Below is a detailed documentation for each endpoint."""
+import logging
+logging.getLogger('werkzeug').setLevel(logging.ERROR)
 
 from flask import (
 	Flask, 
@@ -183,4 +185,4 @@ def retrieve():
 
 if __name__ == "__main__":
 	# Only for debugging while developing!
-	app.run(host="127.0.0.1", port=8000, debug=True)
+	app.run(host="127.0.0.1", port=8000, debug=False) # toggle debug to true

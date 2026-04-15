@@ -1,2 +1,0 @@
-Flask==3.0.3 				# For server
-openai==1.55.3 				# For OpenAI API
