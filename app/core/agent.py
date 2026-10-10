@@ -31,28 +31,51 @@ class LLMAgent(object):
         )
         return response.text
 
+    @staticmethod
+    def is_legacy_model(model:str) -> bool:
+        """ GPT-4-era models accept `temperature`; GPT-5/GPT-6 models only accept the default and use reasoning instead. """
+        return model.startswith(("gpt-4", "gpt-3.5", "chatgpt-"))
+
     def construct_query(self, tasks:list, history:list, user_message:str=None) -> dict:
-        """ 
-        Construct OpenAI API completions query, 
-        defaults to `gpt-4o-mini` model, 300 token answer limit, and temperature of 0. 
-        For details see https://platform.openai.com/docs/api-reference/completions.
         """
-        return {
-            task: {
+        Construct OpenAI API chat-completions query for each task,
+        defaults to `gpt-4o-mini` model, 300 token answer limit, and temperature of 0.
+        For details see https://platform.openai.com/docs/api-reference/chat.
+
+        Per-agent parameters in `parameters.py`:
+        - model (str):            any chat-completions model, e.g. "gpt-4o", "gpt-4.1", "gpt-5.4", "gpt-6-sol".
+        - max_tokens (int):       output limit, sent as `max_completion_tokens` (accepted by all models).
+        - temperature (float):    only sent to GPT-4-era models; GPT-5/6 models reject non-default values.
+        - reasoning_effort (str): GPT-5/6 models only, e.g. "none", "low", "medium", "high". Defaults to "none"
+                                  so the interviewer answers quickly and reasoning tokens do not eat the output budget.
+        """
+        queries = {}
+        for task in tasks:
+            params = self.parameters[task]
+            model = params.get('model', 'gpt-4o-mini')
+            max_tokens = params.get('max_tokens', 300)
+            query = {
                 "messages": [{
-                    "role":"user", 
+                    "role":"user",
                     "content": fill_prompt_with_interview(
-                        self.parameters[task]['prompt'], 
+                        params['prompt'],
                         self.parameters['interview_plan'],
                         history,
                         user_message=user_message
                     )
                 }],
-                "model": self.parameters[task].get('model', 'gpt-4o-mini'),
-                "max_tokens": self.parameters[task].get('max_tokens', 300),
-                "temperature": self.parameters[task].get('temperature', 0)
-            } for task in tasks
-        }
+                "model": model,
+            }
+            if self.is_legacy_model(model):
+                query["max_completion_tokens"] = max_tokens
+                query["temperature"] = params.get('temperature', 0)
+            else:
+                # Reasoning models need headroom even for one-word answers (e.g. the moderator's yes/no).
+                query["max_completion_tokens"] = max(max_tokens, 16)
+                # `extra_body` passes the parameter through regardless of the installed openai SDK version.
+                query["extra_body"] = {"reasoning_effort": params.get('reasoning_effort', 'none')}
+            queries[task] = query
+        return queries
 
     def review_answer(self, message:str, history:list) -> bool:
         """ Moderate answers: Are they on topic? """

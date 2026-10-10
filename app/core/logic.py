@@ -84,6 +84,14 @@ def next_question(session_id:str, interview_id:str, user_message:str=None) -> di
     if interview.is_terminated():
         return {'session_id':session_id, 'message':parameters['termination_message']}
 
+    # An empty message on an existing session is a page (re)load, not an answer, e.g. when the survey
+    # page is rendered twice (Qualtrics preview shows desktop and mobile) or the participant refreshes.
+    # Re-send the last question instead of moderating an empty answer, which would flag the session.
+    if not (user_message or "").strip():
+        last_question = next((m['content'] for m in reversed(interview.get_history()) if m.get('type') == 'question'), parameters['first_question'])
+        logging.info(f"Empty message for existing session '{session_id}': re-sending last question")
+        return {'session_id':session_id, 'interview_id':interview_id, 'message':last_question}
+
     # Provide interview guidelines to LLM agent
     agent.load_parameters(parameters)
 

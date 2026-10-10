@@ -9,5 +9,6 @@ services:
     environment:
       - LOG_LEVEL=${LOG_LEVEL:-ERROR}   # Defaults to minimum logging at ERROR level
       - DATA_DIR=/app/data              # Save to subdirectory named 'data'
+      - OPENAI_API_KEY=${OPENAI_API_KEY} # Passed through from host environment
     volumes:
       - ./app:/app 

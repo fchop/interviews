@@ -30,3 +30,5 @@ wheels/
 *.csv
 data/
 .aws-sam/
+.venv/
+tests/sim_report*.md
